@@ -24,7 +24,6 @@
 config_dir="$HOME/.esim"
 config_file="config.ini"
 eSim_Home=`pwd`
-ngspiceFlag=0
 
 ## All Functions goes here
 
@@ -61,23 +60,14 @@ function createConfigFile
 
 function installNghdl
 {
-
     echo "Installing NGHDL..........................."
     unzip -o nghdl.zip
-    cd nghdl/
-    chmod +x install-nghdl.sh
-
-    # Do not trap on error of any command. Let NGHDL script handle its own errors.
-    trap "" ERR
-
-    ./install-nghdl.sh --install       # Install NGHDL
-        
-    # Set trap again to error_exit function to exit on errors
-    trap error_exit ERR
-
-    ngspiceFlag=1
-    cd ../
-
+    if [[ -f nghdl/install-nghdl-scripts/install-nghdl-25.04.sh ]] &&
+        (cd nghdl && bash ./install-nghdl.sh --install); then
+        return 0
+    fi
+    echo "Warning: NGHDL co-simulation is unavailable. Installing Ubuntu's ngspice for standard circuit simulation." >&2
+    sudo apt-get install -y --no-install-recommends ngspice
 }
 
 
@@ -108,49 +98,14 @@ function installKicad
 {
     echo "Installing KiCad..........................."
 
-    # Detect Ubuntu version
-    ubuntu_version=$(lsb_release -rs)
-
-    # Define KiCad PPAs based on Ubuntu version
-    if [[ "$ubuntu_version" == "24.04" || "$ubuntu_version" == "25.04" ]]; then
-        echo "Ubuntu $ubuntu_version detected."
-        kicadppa="kicad/kicad-8.0-releases"
-
-        # Check if KiCad is installed using dpkg-query for the main package
-        if dpkg -s kicad &>/dev/null; then
-            installed_version=$(dpkg-query -W -f='${Version}' kicad | cut -d'.' -f1)
-            if [[ "$installed_version" != "8" ]]; then
-                echo "A different version of KiCad ($installed_version) is installed."
-                read -p "Do you want to remove it and install KiCad 8.0? (yes/no): " response
-
-                if [[ "$response" =~ ^([Yy][Ee][Ss]|[Yy])$ ]]; then
-                    echo "Removing KiCad $installed_version..."
-                    sudo apt-get remove --purge -y kicad kicad-footprints kicad-libraries kicad-symbols kicad-templates
-                    sudo apt-get autoremove -y
-                else
-                    echo "Exiting installation. KiCad $installed_version remains installed."
-                    exit 1
-                fi
-            else
-                echo "KiCad 8.0 is already installed."
-                exit 0
-            fi
-        fi
-
-    else
-        kicadppa="kicad/kicad-6.0-releases"
+    local status_and_version
+    status_and_version=$(dpkg-query -W -f='${Status} ${Version}' kicad 2>/dev/null || true)
+    if [[ "$status_and_version" == 'install ok installed 8.'* ]]; then
+        echo "KiCad 8 is already installed."
+        return 0
     fi
 
-    # Check if the PPA is already added
-    if ! grep -q "^deb .*${kicadppa}" /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null; then
-        echo "Adding KiCad PPA to local apt repository: $kicadppa"
-        sudo add-apt-repository -y "ppa:$kicadppa"
-        sudo apt-get update
-    else
-        echo "KiCad PPA is already present in sources."
-    fi
-
-    # Install KiCad packages
+    # Plucky's universe archive provides this version and its companion packages.
     sudo apt-get install -y --no-install-recommends kicad=8.0.8+dfsg-1 kicad-footprints kicad-libraries kicad-symbols kicad-templates
 
     echo "KiCad installation completed successfully!"
@@ -160,68 +115,22 @@ function installKicad
 function installDependency
 {
 
-    set +e      # Temporary disable exit on error
-    trap "" ERR # Do not trap on error of any command
-
-    # Update apt repository
-    echo "Updating apt index files..................."
+    echo "Updating apt package indexes..."
     sudo apt-get update
-    
-    set -e      # Re-enable exit on error
-    trap error_exit ERR
-    
-    echo "Instaling virtualenv......................."
-    sudo apt install python3-virtualenv
-   
-    echo "Creating virtual environment to isolate packages "
-    virtualenv $config_dir/env
-    
-    echo "Starting the virtual env..................."
-    source $config_dir/env/bin/activate
 
-    echo "Upgrading Pip.............................."
-    pip install --upgrade pip
-    
-    echo "Installing Xterm..........................."
-    sudo apt-get install -y xterm
-    
-    echo "Installing Psutil.........................."
-    sudo apt-get install -y python3-psutil
-    
-    echo "Installing PyQt5..........................."
-    sudo apt-get install -y python3-pyqt5
+    # Ubuntu builds Qt and matplotlib for its Python and CPU architecture.
+    echo "Installing Ubuntu packages for eSim..."
+    sudo apt-get install -y --no-install-recommends \
+        python3-venv python3-pyqt5 python3-matplotlib python3-psutil \
+        python3-watchdog unzip xterm
 
-    echo "Installing Matplotlib......................"
-    sudo apt-get install -y python3-matplotlib
+    echo "Creating the eSim Python environment..."
+    python3 -m venv --system-site-packages "$config_dir/env"
 
-    echo "Installing Setuptools..................."
-    sudo apt-get install -y python3-setuptools
+    echo "Installing HDL tools in the eSim Python environment..."
+    "$config_dir/env/bin/python" -m pip install \
+        https://github.com/hdl/pyhdlparser/tarball/master makerchip-app sandpiper-saas
 
-    # Install NgVeri Depedencies
-    echo "Installing Pip3............................"
-    sudo apt install -y python3-pip
-
-    echo "Installing Watchdog........................"
-    pip3 install watchdog
-
-    echo "Installing Hdlparse........................"
-    pip3 install --upgrade https://github.com/hdl/pyhdlparser/tarball/master
-
-    echo "Installing Makerchip......................."
-    pip3 install makerchip-app
-
-    echo "Installing SandPiper Saas.................."
-    pip3 install sandpiper-saas
-
-   
-    echo "Installing Hdlparse......................"
-    pip3 install hdlparse
-
-    echo "Installing matplotlib................"
-    pip3 install matplotlib
-
-    echo "Installing PyQt5............."
-    pip3 install PyQt5  
 }
 
 
@@ -231,15 +140,11 @@ function copyKicadLibrary
     #Extract custom KiCad Library
     tar -xJf library/kicadLibrary.tar.xz
 
-    if [ -d ~/.config/kicad/6.0 ];then
-        echo "kicad config folder already exists"
-    else 
-        echo ".config/kicad/6.0 does not exist"
-        mkdir -p ~/.config/kicad/6.0
-    fi
+    local kicad_config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/kicad/8.0"
+    mkdir -p "$kicad_config_dir"
 
     # Copy symbol table for eSim custom symbols 
-    cp kicadLibrary/template/sym-lib-table ~/.config/kicad/6.0/
+    cp kicadLibrary/template/sym-lib-table "$kicad_config_dir/"
     echo "symbol table copied in the directory"
 
     # Copy KiCad symbols made for eSim
@@ -298,7 +203,8 @@ function createDesktopStartScript
     # Copy desktop icon file to share applications
     sudo cp -vp esim.desktop /usr/share/applications/
     # Copy desktop icon file to Desktop
-    cp -vp esim.desktop $HOME/Desktop/
+    mkdir -p "$HOME/Desktop"
+    cp -vp esim.desktop "$HOME/Desktop/"
 
     set +e      # Temporary disable exit on error
     trap "" ERR # Do not trap on error of any command
@@ -416,8 +322,6 @@ elif [ $option == "--uninstall" ];then
         echo "Removing KiCad..........................."
         sudo apt purge -y kicad kicad-footprints kicad-libraries kicad-symbols kicad-templates
         sudo rm -rf /usr/share/kicad
-	sudo rm /etc/apt/sources.list.d/kicad*
-        rm -rf $HOME/.config/kicad/6.0
 
         echo "Removing Virtual env......................."
         sudo rm -r $config_dir/env
