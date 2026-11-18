@@ -3,6 +3,12 @@ eSim Packaging
 
 It contains all the documentation for packaging eSim for distribution.
 
+## Winter Internship Task 4
+
+This work looks at what happens when you install eSim 2.5 on Ubuntu 25.04. The main blocker was PyQt5. Once the installer used Ubuntu's PyQt5 package from inside the eSim virtual environment, the installation completed and the main window opened on the ARM64 test VM.
+
+[Read the report, reproduce the installation, and see the screenshots](REPORT.md).
+
 
 # Packaging eSim for Distribution:
 

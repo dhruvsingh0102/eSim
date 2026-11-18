@@ -1,36 +1,44 @@
-# eSim 2.5 installation on Ubuntu 25.04
+# Getting eSim 2.5 running on Ubuntu 25.04
 
-FOSSEE Winter Internship 2026 · Screening Task 4 · 18 November 2026
+FOSSEE Winter Internship 2026, Screening Task 4
 
-## Test environment
+The first installer stopped at the Ubuntu version check. Once I got past that, PyQt5 was the main blocker. The fixed installer completed on a clean Ubuntu 25.04 ARM64 VM, the eSim main window opened, and ngspice returned the expected result for a voltage-divider test.
 
-| Item | Value |
-| --- | --- |
-| Application | FOSSEE eSim 2.5 Linux ZIP, verified against SHA-256 `b9860ae26f026930bae589520761f4a57b85d593a2e2cd1ac83d5e5db2f281ed` |
-| Installer baseline | [FOSSEE/eSim installers branch at a77d6b9](https://github.com/FOSSEE/eSim/tree/a77d6b904c7bab275d819cf4d8cbb594802fe16d) |
-| Guest | Ubuntu 25.04 Plucky, ARM64, 2 vCPUs, 4 GiB RAM, 40 GiB virtual disk |
-| Host and hypervisor | Apple M4 Mac, Lima 2.3.0 with Apple Virtualization |
-| Reset method | Shut down the guest before cloning the clean disk with APFS copy-on-write. Restore that clone before the fixed run. |
+## What I tested
 
-The release ZIP and the installers branch supply different inputs. The ZIP contains the eSim 2.5 application, KiCad library, SKY130 library and NGHDL archive. The branch supplies the installer scripts. [FOSSEE release downloads](https://esim.fossee.in/downloads)
+I used the [official eSim 2.5 Linux ZIP](https://esim.fossee.in/downloads) for the application and bundled libraries. I used the [upstream installers branch at `a77d6b9`](https://github.com/FOSSEE/eSim/tree/a77d6b904c7bab275d819cf4d8cbb594802fe16d) for the installer scripts. The test VM ran in Lima 2.3.0 on an Apple M4 Mac, with two CPUs, 4 GiB of RAM, and a 40 GiB virtual disk. I saved a clean copy of the stopped VM disk and restored it before the final install.
 
-## Issues and fixes
+## What broke and how I fixed it
 
-| Step | Observed result | Cause | Change |
-| --- | --- | --- | --- |
-| Execute the upstream installer | `bash -n Ubuntu/install-eSim.sh` exited 2 at line 70 with `syntax error near unexpected token '}'`. | An unrelated installer body followed the version dispatcher's child-script call and left the surrounding `if` unclosed. | Restored the upstream dispatcher from `f4cede1`, including the 25.04 case and child exit status propagation. |
-| Run the released eSim 2.5 ZIP on Ubuntu 25.04 | The published installer reported `Unsupported Ubuntu version: 25.04` and exited 1 in the guest. | Its dispatcher and script directory cover only 22.04, 23.04 and 24.04. | Overlay both the repaired dispatcher and version scripts onto the released package. |
-| Install Python GUI dependencies | The branch installer reached `pip3 install PyQt5`. It tried to build PyQt5 on ARM64 and exited 1 with `metadata-generation-failed` and a missing `qmake` error. The installer stopped before generating the launcher. | The installer installed PyQt5 using APT, created an isolated virtual environment that could not see it, and then reinstalled PyQt5 from PyPI. | Use Ubuntu's PyQt5, Matplotlib and Watchdog packages in a Python venv created with `--system-site-packages`. Keep HDL packages installed using that venv's Python. |
-| Install eSim alongside existing KiCad 8 | A controlled Bash test reproduced an exit status of 0 before the script reached launcher setup. | `installKicad` called `exit 0` inside the function. | Detect installed KiCad 8 with `dpkg-query` and return from the function so installation continues. Clean installations use the KiCad 8.0.8 packages from Plucky universe. |
-| Register eSim symbols with KiCad | The installer source targeted KiCad 6.0 even though Ubuntu 25.04 installs KiCad 8. | A hardcoded config path remained from a previous KiCad version. | Copy the symbol table into KiCad 8's config directory and honor `XDG_CONFIG_HOME`. Preserve that config directory on uninstall. |
-| Install bundled NGHDL | Executing its launcher separately in the Ubuntu guest exited 1 with `Unsupported Ubuntu version: 25.04`. | This release's embedded NGHDL archive lacks a Plucky script. | Use the matching NGHDL installer if present and successful. Otherwise emit a warning and install Ubuntu's ngspice so regular SPICE simulations remain available. |
-| Create the launcher on a minimal guest | The clean Ubuntu image lacks a user desktop directory. | The install script assumed `$HOME/Desktop` already existed. | Create the directory before copying the desktop launcher. |
+### The installer could not reach the Ubuntu 25.04 script
 
-## Reproduce
+The installer shipped in the ZIP reported `Unsupported Ubuntu version: 25.04` and exited with status 1. The ZIP only included scripts for Ubuntu 22.04, 23.04, and 24.04.
 
-Use a clean Ubuntu 25.04 VM with the `universe` repository enabled. Download the eSim 2.5 Linux ZIP from FOSSEE and verify its checksum. Extract and run the original installer first to reproduce its version rejection. To reproduce the Python failure, copy the repaired dispatcher and the 25.04 child from the baseline commit into a separate fresh copy of the package.
+The upstream branch had a 25.04 script, but its main wrapper failed `bash -n` with `syntax error near unexpected token '}'` at line 70. An extra block of installer code interrupted an unfinished `if`. I restored the version-selection wrapper from upstream commit `f4cede1`. It now calls the 25.04 script and passes its exit status back to the terminal. It also prints the short Ubuntu version when the longer version string is unavailable. [Installer wrapper](Ubuntu/install-eSim.sh)
 
-For the fixed run, restore the clean VM and run the following inside Ubuntu. The current directory during installation must be the eSim application root.
+### PyQt5 was the main GUI blocker
+
+The Ubuntu script installed PyQt5 with APT, but eSim's isolated Python environment could not import the system package. When the script ran `pip3 install PyQt5`, pip tried to build it from source on ARM64. That failed during package setup with a missing `qmake` error and stopped installation before the launcher was created.
+
+I changed the script to install PyQt5, Matplotlib, and Watchdog through APT and create the venv with `--system-site-packages`. That lets eSim use Ubuntu's builds from inside the venv. The script still uses pip inside that venv for the HDL tools. [Ubuntu 25.04 installer](Ubuntu/install-eSim-scripts/install-eSim-25.04.sh)
+
+### KiCad and desktop setup
+
+- **KiCad was already installed.** The old script called `exit 0` inside the KiCad step, which ended the whole installation before launcher setup. The updated step returns to the installer so it can continue. On a clean system, the script installs KiCad 8.0.8 from Ubuntu's `universe` repository.
+- **The symbol table went to the KiCad 6.0 folder.** It now goes into the KiCad 8.0 folder under `XDG_CONFIG_HOME`, with `~/.config` as the default. I removed the old uninstall commands that deleted KiCad PPA entries and the 6.0 config folder.
+- **The minimal guest had no Desktop folder.** The installer now creates `~/Desktop` before copying the shortcut.
+
+### The bundled NGHDL installer also rejected Ubuntu 25.04
+
+Running the bundled NGHDL installer separately gave the same unsupported-version error. Its ZIP also lacks a 25.04 script, so it stopped before the LLVM step. The updated installer tries NGHDL when a matching script is present. Otherwise, or if that script fails, it warns that co-simulation is unavailable and installs Ubuntu's ngspice for basic circuit simulation.
+
+## How to reproduce it
+
+Use a clean Ubuntu 25.04 VM with Git, Python 3, and the `universe` repository enabled. Download the [eSim 2.5 Linux ZIP](https://esim.fossee.in/downloads). Its published SHA-256 is `b9860ae26f026930bae589520761f4a57b85d593a2e2cd1ac83d5e5db2f281ed`.
+
+**To see the original failures**, extract the ZIP and run its installer from inside `eSim-2.5` with `bash ./install-eSim.sh --install`. That reproduces the version rejection. To reproduce the PyQt5 failure on ARM64, repeat on a fresh copy of the ZIP using the [working wrapper from `f4cede1`](https://github.com/FOSSEE/eSim/blob/f4cede1/Ubuntu/install-eSim.sh) and the [original Ubuntu 25.04 script from `a77d6b9`](https://github.com/FOSSEE/eSim/blob/a77d6b9/Ubuntu/install-eSim-scripts/install-eSim-25.04.sh). Put the wrapper at `eSim-2.5/install-eSim.sh` and the version-specific script in `eSim-2.5/install-eSim-scripts/`.
+
+**To try the fix**, restore the clean VM, then run these commands in Bash from the directory containing the ZIP. Answer the installer’s proxy prompt for your connection.
 
 ```bash
 git clone --branch installers --single-branch --filter=blob:none --sparse \
@@ -45,29 +53,26 @@ bash ./install-eSim.sh --install 2>&1 | tee ../install.log
 printf 'Installation exit status: %s\n' "$?"
 ```
 
-Answer the proxy prompt for your connection. Launch the program with `esim` in an X11 session.
+After installation, run `esim` from an X11 session.
 
-## Verification and evidence
+## What passed
 
-Bash syntax checks passed for the dispatcher and the Ubuntu 25.04 child script. Isolated dispatch tests passed for install and uninstall routing on 22.04.4, 23.04, 24.04 and 25.04, as well as invalid arguments, missing child scripts and nonzero child exit status propagation.
+| Check | Result |
+| --- | --- |
+| Install after restoring the clean disk | Exit status 0. Installed KiCad 8.0.8 and ngspice 44.2, created `/usr/bin/esim`, and copied the symbol table and desktop shortcut. |
+| Python imports | The venv imported PyQt5, Matplotlib, hdlparse, and Watchdog successfully. |
+| Main eSim window | `esim` opened the eSim 2.5 main window under Xvfb with Openbox and a test workspace. |
+| Basic circuit simulation | A standalone ngspice voltage divider used two 1 kΩ resistors and a 10 V source. It returned `v(out) = 5.000000e+00`, the expected 5 V. |
+| Rerun with KiCad 8 already installed | The installer reached launcher setup and exited 0 again. |
 
-The fixed installer exited **0** after a clean disk restore. It installed KiCad 8.0.8 and ngspice 44.2, generated `/usr/bin/esim`, and placed the symbol table and desktop launcher in the expected paths. The venv imported PyQt5, Matplotlib, hdlparse and Watchdog successfully. A second guest run with KiCad 8 already installed also reached launcher setup and exited **0**.
+I also checked Bash syntax for both scripts and tested how the wrapper routes install and uninstall requests for Ubuntu 22.04.4, 23.04, 24.04, and 25.04. Those checks covered invalid arguments, a missing version script, and a failing version script.
 
-Launching `esim` on an Xvfb display with Openbox and a test workspace produced the eSim 2.5 main window. A separate ngspice smoke test drove two equal 1 kΩ resistors with a 10 V source and measured 5 V at their midpoint.
+**Test limits.** The guest was ARM64 and used a virtual X11 display. The desktop icon trust metadata was unavailable in that setup. The terminal launcher worked. AMD64, a full uninstall, and NGHDL co-simulation remain unverified.
 
-```text
-Baseline: error: metadata-generation-failed (PyQt5)
-Baseline: Ubuntu 25.04 child exit status: 1
-Fixed:    eSim Installed Successfully
-Fixed:    Fixed installer exit status: 0
-GUI:      eSim 2.5 main window rendered successfully
-ngspice:  v(out) = 5.000000e+00
-```
+## Screenshots
 
-- [Public fork on the installers branch](screenshots/01-github-installer-branch.jpg)
-- [Clean Ubuntu guest and disk checkpoint](screenshots/02-clean-ubuntu-checkpoint.jpg)
-- [Original release rejection and PyQt5 baseline error](screenshots/03-pyqt5-install-failure.jpg)
-- [Successful fixed run after restoring the clean disk](screenshots/04-clean-installer-rerun.jpg)
-- [eSim 2.5 main window in the Ubuntu VM](screenshots/05-esim-main-window.png)
-
-The checks used ARM64 and a virtual X11 display. The headless guest reported that trusted desktop icon metadata was unavailable. The installed terminal launcher opened successfully. NGHDL co-simulation and an AMD64 install remain unverified. The bundled NGHDL installer failed its version check before reaching LLVM.
+1. [GitHub fork on the installers branch](screenshots/01-github-installer-branch.jpg)
+2. [Clean Ubuntu VM before installing eSim](screenshots/02-clean-ubuntu-checkpoint.jpg)
+3. [The first installer failures](screenshots/03-pyqt5-install-failure.jpg)
+4. [The successful run after restoring the clean VM](screenshots/04-clean-installer-rerun.jpg)
+5. [eSim 2.5 main window](screenshots/05-esim-main-window.png)
